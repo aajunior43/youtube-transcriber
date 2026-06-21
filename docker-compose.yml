@@ -77,6 +77,25 @@ services:
     networks:
       - traefik-public
 
+  transcript-api:
+    build:
+      context: .
+      dockerfile: services/transcript-api/Dockerfile
+    container_name: transcript-api
+    restart: unless-stopped
+    expose:
+      - "8771"
+    networks:
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.transcript-api.rule=Host(`hub.srv1767486.hstgr.cloud`) && PathPrefix(`/api/transcript`)"
+      - "traefik.http.routers.transcript-api.entrypoints=websecure"
+      - "traefik.http.routers.transcript-api.tls=true"
+      - "traefik.http.routers.transcript-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.transcript-api.loadbalancer.server.port=8771"
+      - "traefik.docker.network=traefik-public"
+
   organizador-api:
     build:
       context: .

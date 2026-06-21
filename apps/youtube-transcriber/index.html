@@ -503,9 +503,9 @@ body {
     </div>
 
     <div class="tab-content active" id="tabTranscript">
-      <div class="action-bar" style="justify-content:center;padding:12px 0">
-        <button class="btn btn-primary" id="btnOpenTranscript" onclick="window.open('https://youtubetranscript.com/?v='+state.videoId,'_blank')">📄 Abrir Transcrição</button>
-        <button class="btn btn-secondary btn-sm" id="btnCopyUrl" style="padding:14px 18px">📋 Copiar Link</button>
+      <div id="transcriptActions" style="display:none" class="action-bar">
+        <button class="btn btn-secondary btn-sm" onclick="doCopyAll()">📋 Copiar</button>
+        <button class="btn btn-secondary btn-sm" onclick="doDownloadTxt()">⬇ Download TXT</button>
       </div>
       <div class="transcript-list" id="transcriptList"></div>
     </div>
@@ -532,8 +532,9 @@ body {
 </div>
 
 <script>
-let state = { videoId: '', title: '', channel: '' };
+let state = { videoId: '', title: '', channel: '', segments: [] };
 const $ = id => document.getElementById(id);
+const API = '/api/transcript';
 
 function toast(msg, icon = '') {
   const el = document.createElement('div');
@@ -550,6 +551,13 @@ function extractVideoId(url) {
   return null;
 }
 
+function fmtTime(sec) {
+  sec = Math.floor(sec);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
 async function handleFetch() {
   hideError();
   const url = $('urlInput').value.trim();
@@ -558,15 +566,16 @@ async function handleFetch() {
   if (!id) { showError('URL inválida.'); return; }
 
   state.videoId = id;
+  state.segments = [];
+
   const btn = $('btnFetch');
   btn.disabled = true;
-  btn.textContent = 'Buscando…';
+  btn.textContent = 'Transcrevendo… (~2 min)';
   hideError();
 
   $('videoCard').classList.remove('active');
   $('resultCard').classList.remove('active');
-  $('btnOpenTranscript').onclick = () => window.open(`https://youtubetranscript.com/?v=${id}`, '_blank');
-  $('btnCopyUrl').onclick = () => { navigator.clipboard.writeText(`https://youtubetranscript.com/?v=${id}`).then(() => toast('Link copiado!', '📋')); };
+  showLoading('Baixando áudio e transcrevendo...');
 
   try {
     const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`).then(r => r.ok ? r.json() : null);
@@ -580,20 +589,98 @@ async function handleFetch() {
     }
     $('videoThumb').src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
     $('videoCard').classList.add('active');
-    $('resultCard').classList.add('active');
-    showEmpty('Transcrição via YouTubeTranscript.com', 'Clique no botão abaixo para abrir a transcrição em nosso parceiro.');
+
+    const res = await fetch(`${API}?videoId=${id}`, { signal: AbortSignal.timeout(600000) });
+    if (res.status === 429) {
+      showError('Servidor ocupado transcrevendo outro vídeo. Tente novamente em alguns minutos.');
+      showEmpty('Servidor ocupado', 'Apenas uma transcrição por vez.');
+      return;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showError(err.error || 'Erro na transcrição');
+      showEmpty('Erro', err.error || 'Falha ao transcrever');
+      return;
+    }
+
+    const data = await res.json();
+    if (data.segments && data.segments.length > 0) {
+      state.segments = data.segments;
+      $('resultCard').classList.add('active');
+      renderTranscript();
+    } else {
+      showError('Nenhum texto encontrado no áudio.');
+    }
   } catch (e) {
-    showError('Erro ao carregar informações do vídeo.');
+    if (e.name === 'TimeoutError') showError('Tempo limite excedido. O vídeo pode ser muito longo.');
+    else showError('Erro de conexão. ' + (e.message || ''));
   }
 
   btn.disabled = false;
   btn.textContent = 'Transcrever';
 }
 
+function renderTranscript() {
+  const list = $('transcriptList');
+  list.innerHTML = state.segments.map(s =>
+    `<div class="line" onclick="jumpTo(${s.start})">
+      <span class="time">${fmtTime(s.start)}</span>
+      <span class="text">${esc(s.text)}</span>
+    </div>`
+  ).join('');
+  $('transcriptActions').style.display = state.segments.length ? 'flex' : 'none';
+}
+
+function jumpTo(sec) {
+  window.open(`https://www.youtube.com/watch?v=${state.videoId}&t=${Math.floor(sec)}`, '_blank');
+}
+
+function doCopyAll() {
+  const text = state.segments.map(s => `[${fmtTime(s.start)}] ${s.text}`).join('\n');
+  navigator.clipboard.writeText(text).then(() => toast('Transcrição copiada!', '📋')).catch(() => toast('Erro ao copiar', '✗'));
+}
+
+function doDownloadTxt() {
+  const text = state.segments.map(s => `[${fmtTime(s.start)}] ${s.text}`).join('\n');
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `transcript-${state.videoId}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Download iniciado!', '⬇');
+}
+
+function doSearch() {
+  const q = $('searchInput').value.trim().toLowerCase();
+  const list = $('searchResults');
+  const count = $('searchCount');
+
+  if (!q || !state.segments.length) {
+    list.innerHTML = '';
+    count.textContent = '';
+    return;
+  }
+
+  const matches = state.segments.filter(s => s.text.toLowerCase().includes(q));
+  count.textContent = `${matches.length} resultado${matches.length !== 1 ? 's' : ''}`;
+
+  list.innerHTML = matches.length === 0
+    ? '<div class="empty-state"><div class="icon">🔍</div><p>Nenhum resultado</p></div>'
+    : matches.map(s => {
+        const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        const display = esc(s.text).replace(re, '<mark>$1</mark>');
+        return `<div class="line" onclick="jumpTo(${s.start})">
+          <span class="time">${fmtTime(s.start)}</span>
+          <span class="text">${display}</span>
+        </div>`;
+      }).join('');
+}
+
 function showError(msg) { const e = $('errorBox'); e.textContent = msg; e.classList.add('active'); }
 function hideError() { $('errorBox').classList.remove('active'); }
 function showEmpty(title, msg) { $('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>${esc(title)}</h3><p>${esc(msg)}</p></div>`; }
-function showLoading() { $('transcriptList').innerHTML = `<div class="empty-state"><div class="spinner"></div><p>Carregando…</p></div>`; }
+function showLoading(msg) { $('transcriptList').innerHTML = `<div class="loading-state"><div class="spinner"></div><p>${esc(msg || 'Carregando...')}</p></div>`; }
 
 // Tabs
 document.querySelectorAll('.tab').forEach(tab => {
@@ -601,18 +688,23 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
-    const id = 'tab' + tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1);
+    const tname = tab.dataset.tab;
+    const id = 'tab' + tname.charAt(0).toUpperCase() + tname.slice(1);
     $(id).classList.add('active');
-    if (tab.dataset.tab === 'info') buildInfo();
+    if (tname === 'info') buildInfo();
+    if (tname === 'search') $('searchInput').focus();
   });
 });
 
 function buildInfo() {
+  const dur = state.segments.length > 0 ? fmtTime(state.segments[state.segments.length-1].end || 0) : '—';
   $('infoGrid').innerHTML = [
     { label: 'ID do Vídeo', value: state.videoId },
     { label: 'Título', value: state.title || '—' },
     { label: 'Canal', value: state.channel || '—' },
-    { label: 'URL', value: `<a href="https://youtubetranscript.com/?v=${state.videoId}" target="_blank">youtubetranscript.com</a>` }
+    { label: 'Duração transcrita', value: dur },
+    { label: 'Segmentos', value: String(state.segments.length) },
+    { label: 'URL', value: `<a href="https://www.youtube.com/watch?v=${state.videoId}" target="_blank">Abrir video</a>` }
   ].map(i => `<div class="info-item"><span class="label">${i.label}</span><span class="value">${i.value}</span></div>`).join('');
 }
 
@@ -627,6 +719,10 @@ if (saved) setTheme(saved);
 $('themeToggle').addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
 
 $('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleFetch(); });
+
+// Search debounce
+let searchTimer;
+$('searchInput').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 300); });
 
 $('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>YouTube Transcriber</h3><p>Cole uma URL do YouTube e clique em <strong>Transcrever</strong>.</p></div>`;
 </script>
