@@ -85,6 +85,16 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     memswap_limit: 768m
+    environment:
+      MAX_UPLOAD_MB: "500"
+      DB_HOST: hub-postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-hub_master}
+      DB_USER: ${DB_USER:-hubmaster}
+      DB_PASS: ${DB_PASS:-hubmaster_secret_2026}
+    depends_on:
+      postgres:
+        condition: service_healthy
     expose:
       - "8771"
     networks:

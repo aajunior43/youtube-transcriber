@@ -3,7 +3,7 @@ WORKDIR /app
 
 RUN apt-get update -qq && apt-get install -y -qq ffmpeg && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir yt-dlp flask flask-cors faster-whisper
+RUN pip install --no-cache-dir flask flask-cors faster-whisper gunicorn psycopg2-binary
 
 COPY services/transcript-api/server.py .
 
@@ -12,4 +12,4 @@ ENV MAX_DURATION_MINUTES=20
 
 EXPOSE 8771
 
-CMD ["python3", "server.py"]
+CMD ["gunicorn", "--workers", "1", "--threads", "4", "--timeout", "600", "--bind", "0.0.0.0:8771", "server:app"]
