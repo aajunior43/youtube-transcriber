@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir flask flask-cors faster-whisper gunicorn psycopg2
 
 COPY services/transcript-api/server.py .
 
-ENV WHISPER_MODEL=tiny
+ENV WHISPER_MODEL=small
+ENV WHISPER_BEAM_SIZE=5
 ENV MAX_DURATION_MINUTES=20
 
 EXPOSE 8771

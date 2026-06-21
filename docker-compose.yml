@@ -83,10 +83,12 @@ services:
       dockerfile: services/transcript-api/Dockerfile
     container_name: transcript-api
     restart: unless-stopped
-    mem_limit: 1g
-    memswap_limit: 1536m
+    mem_limit: 2g
+    memswap_limit: 2560m
     environment:
       MAX_UPLOAD_MB: "500"
+      WHISPER_MODEL: small
+      WHISPER_BEAM_SIZE: "5"
       DB_HOST: hub-postgres
       DB_PORT: "5432"
       DB_NAME: ${DB_NAME:-hub_master}

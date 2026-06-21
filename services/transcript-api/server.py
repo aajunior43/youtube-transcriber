@@ -9,7 +9,8 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 CORS(app)
 
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
+BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
 MAX_DURATION = int(os.environ.get("MAX_DURATION_MINUTES", "20")) * 60
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "500"))
 DB_HOST = os.environ.get("DB_HOST", "hub-postgres")
@@ -103,7 +104,10 @@ def get_model():
     global model
     with model_lock:
         if model is None:
-            model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+            model = WhisperModel(
+                MODEL_SIZE, device="cpu", compute_type="int8",
+                cpu_threads=2, num_workers=1
+            )
         return model
 
 def cleanup(files):
@@ -151,7 +155,12 @@ def worker():
             job["status"] = "transcribing"
             job["progress"] = 15
             wh_model = get_model()
-            segments_gen, info = wh_model.transcribe(normalized_path, beam_size=1)
+            segments_gen, info = wh_model.transcribe(
+                normalized_path,
+                beam_size=BEAM_SIZE,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500}
+            )
 
             segments = []
             total = 0
@@ -309,7 +318,7 @@ def health():
         busy = any(j["status"] in ("preparing", "transcribing", "saving") for j in queue)
     return jsonify({
         "status": "ok", "queueSize": len(queue), "busy": busy,
-        "model": MODEL_SIZE, "maxUploadMb": MAX_UPLOAD_MB
+        "model": MODEL_SIZE, "beamSize": BEAM_SIZE, "maxUploadMb": MAX_UPLOAD_MB
     })
 
 if __name__ == "__main__":
