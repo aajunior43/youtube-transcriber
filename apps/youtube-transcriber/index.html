@@ -386,6 +386,38 @@ body {
   padding: 40px 20px;
   color: var(--text-secondary);
 }
+
+/* Queue */
+.queue-section { margin-top: 16px; }
+.empty-queue { text-align:center;padding:24px;font-size:0.85rem;color:var(--text-secondary); }
+.queue-item {
+  display:flex;align-items:center;gap:12px;
+  padding:12px 14px;border-radius:14px;
+  border:1px solid var(--border);background:var(--surface);
+  margin-bottom:8px;position:relative;overflow:hidden;
+  transition:all .2s;
+}
+.queue-item.done { border-color:rgba(16,185,129,0.3);background:rgba(16,185,129,0.05); }
+.queue-item.error { border-color:rgba(225,29,72,0.3);background:rgba(225,29,72,0.05); }
+.queue-item.downloading { border-color:rgba(59,130,246,0.3); }
+.queue-item.transcribing { border-color:rgba(225,29,72,0.3); }
+.qi-info { flex:1;min-width:0; }
+.qi-title { font-size:0.85rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.qi-status { font-size:0.75rem;color:var(--text-secondary);margin-top:2px; }
+.qi-btn.done-btn { border-color:rgba(16,185,129,0.4);color:var(--green); }
+.qi-btn.done-btn:hover { background:rgba(16,185,129,0.1); }
+.qi-btn {
+  padding:6px 14px;border-radius:10px;border:1px solid var(--border);
+  background:transparent;color:var(--text);cursor:pointer;
+  font-family:var(--font);font-size:0.75rem;font-weight:600;transition:all .2s;flex-shrink:0;
+}
+.qi-btn:hover { border-color:var(--primary);color:var(--primary); }
+.qi-btn.err { border-color:var(--primary);color:var(--primary); }
+.qi-progress {
+  position:absolute;bottom:0;left:0;right:0;height:3px;
+  background:var(--border);border-radius:0 0 14px 14px;overflow:hidden;
+}
+.qi-bar { height:100%;background:linear-gradient(90deg,var(--primary),var(--blue));transition:width .5s ease;border-radius:0 0 0 14px; }
 .empty-state .icon { font-size: 2.5rem; margin-bottom: 8px; }
 .empty-state h3 { font-size: 1rem; margin-bottom: 4px; color: var(--text); }
 .empty-state p { font-size: 0.9rem; }
@@ -478,11 +510,25 @@ body {
   <div class="input-card">
     <div class="input-group">
       <input type="text" id="urlInput" placeholder="Cole a URL do YouTube… (youtube.com, youtu.be)" autocomplete="off" />
-      <button class="btn btn-primary" id="btnFetch" onclick="handleFetch()">Transcrever</button>
+      <button class="btn btn-primary" id="btnFetch" onclick="addToQueue()">Transcrever</button>
     </div>
   </div>
 
   <div class="error-box" id="errorBox"></div>
+
+  <!-- Queue status bar -->
+  <div class="card" id="queueSection" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);display:flex;align-items:center;gap:6px">
+        <span id="queueStatusIcon">⏳</span>
+        <span id="queueStatusText">Processando…</span>
+      </span>
+      <span style="font-size:0.7rem;color:var(--text-muted);font-family:var(--mono)" id="queueCount">0 vídeos</span>
+    </div>
+    <div id="queueList">
+      <div class="empty-queue">Nenhum vídeo na fila</div>
+    </div>
+  </div>
 
   <div class="card" id="videoCard">
     <div class="video-header">
@@ -497,9 +543,10 @@ body {
 
   <div class="card" id="resultCard">
     <div class="tabs" id="tabs">
-      <button class="tab active" data-tab="transcript">Transcrição</button>
-      <button class="tab" data-tab="search">Buscar</button>
-      <button class="tab" data-tab="info">Info</button>
+      <button class="tab active" id="tabTranscriptBtn" data-tab="transcript">📄 Transcrição</button>
+      <button class="tab" data-tab="queue" onclick="renderQueue()">📋 Fila</button>
+      <button class="tab" data-tab="search">🔍 Buscar</button>
+      <button class="tab" data-tab="info">ℹ️ Info</button>
     </div>
 
     <div class="tab-content active" id="tabTranscript">
@@ -508,6 +555,13 @@ body {
         <button class="btn btn-secondary btn-sm" onclick="doDownloadTxt()">⬇ Download TXT</button>
       </div>
       <div class="transcript-list" id="transcriptList"></div>
+    </div>
+
+    <div class="tab-content" id="tabQueue">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:0.85rem;color:var(--text-secondary)" id="queueInfo"></div>
+      </div>
+      <div id="queueList"></div>
     </div>
 
     <div class="tab-content" id="tabSearch">
@@ -532,9 +586,9 @@ body {
 </div>
 
 <script>
-let state = { videoId: '', title: '', channel: '', segments: [] };
 const $ = id => document.getElementById(id);
 const API = '/api/transcript';
+let pollTimer = null;
 
 function toast(msg, icon = '') {
   const el = document.createElement('div');
@@ -550,94 +604,156 @@ function extractVideoId(url) {
   for (const r of p) { const m = url.match(r); if (m) return m[1]; }
   return null;
 }
-
 function fmtTime(sec) {
-  sec = Math.floor(sec);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
+  sec = Math.floor(sec); const m = Math.floor(sec / 60); const s = sec % 60;
   return `${m}:${String(s).padStart(2,'0')}`;
 }
 
-async function handleFetch() {
+const STATUS_ICON = { queued:'⏳', downloading:'⬇', transcribing:'🎤', done:'✅', error:'❌' };
+const STATUS_LABEL = { queud:'Na fila', downloading:'Baixando áudio…', transcribing:'Transcrevendo…', done:'Concluído', error:'Erro' };
+
+/* Queue system */
+function renderQueue() {
+  fetch(`${API}/status`).then(r => r.json()).then(data => {
+    const el = $('queueList');
+    const jobs = data.jobs || [];
+    const running = jobs.find(j => j.status === 'downloading' || j.status === 'transcribing');
+
+    // Update queue status bar
+    if (jobs.length > 0) {
+      $('queueSection').style.display = 'block';
+      const active = jobs.find(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'transcribing');
+      if (active) {
+        $('queueStatusIcon').textContent = active.status === 'downloading' ? '⬇' : active.status === 'transcribing' ? '🎤' : '⏳';
+        $('queueStatusText').textContent = active.status === 'downloading' ? 'Baixando áudio…' : active.status === 'transcribing' ? 'Transcrevendo…' : 'Na fila…';
+      } else {
+        $('queueStatusIcon').textContent = '✅';
+        $('queueStatusText').textContent = 'Todos concluídos';
+      }
+      $('queueCount').textContent = `${jobs.length} vídeo${jobs.length !== 1 ? 's' : ''}`;
+    } else {
+      $('queueSection').style.display = 'none';
+    }
+
+    if (jobs.length === 0) {
+      el.innerHTML = '<div class="empty-queue">Nenhum vídeo na fila</div>';
+      return;
+    }
+
+    el.innerHTML = jobs.map((j, i) => {
+      const statusIcon = STATUS_ICON[j.status] || '⏳';
+      let statusText = j.status === 'queued' ? `Na fila (#${i+1})` :
+                       j.status === 'downloading' ? 'Baixando áudio…' :
+                       j.status === 'transcribing' ? 'Transcrevendo…' :
+                       j.status === 'done' ? '✅ Concluído' : '❌ Erro';
+      return `<div class="queue-item ${j.status}">
+        <div class="qi-info">
+          <div class="qi-title">${esc(j.title || j.videoId)}</div>
+          <div class="qi-status">${statusIcon} ${statusText}</div>
+        </div>
+        ${j.status === 'done' ? `<button class="qi-btn done-btn" onclick="showResult('${j.id}')">Ver</button>` : ''}
+        ${j.status === 'error' ? `<button class="qi-btn err" onclick="showResult('${j.id}')">${esc(j.error?.substring(0,30) || 'Erro')}</button>` : ''}
+        ${j.status === 'queued' || j.status === 'downloading' || j.status === 'transcribing' ?
+          `<div class="qi-progress"><div class="qi-bar" style="width:${j.progress}%"></div></div>` : ''}
+      </div>`;
+    }).join('');
+    startPolling();
+  }).catch(() => {});
+}
+
+function startPolling() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(renderQueue, 2000);
+}
+
+async function addToQueue() {
   hideError();
   const url = $('urlInput').value.trim();
   if (!url) { showError('Insira uma URL do YouTube.'); return; }
   const id = extractVideoId(url);
   if (!id) { showError('URL inválida.'); return; }
 
-  state.videoId = id;
-  state.segments = [];
-
-  const btn = $('btnFetch');
-  btn.disabled = true;
-  btn.textContent = 'Transcrevendo… (~2 min)';
-  hideError();
-
-  $('videoCard').classList.remove('active');
-  $('resultCard').classList.remove('active');
-  showLoading('Baixando áudio e transcrevendo...');
+  $('btnFetch').disabled = true;
+  $('btnFetch').textContent = 'Adicionando…';
 
   try {
+    // Get video title
     const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`).then(r => r.ok ? r.json() : null);
-    if (oembed) {
-      state.title = oembed.title || '';
-      state.channel = oembed.author_name || '';
-      $('videoTitle').textContent = state.title;
-      $('videoChannel').textContent = state.channel;
-    } else {
-      $('videoTitle').textContent = 'Vídeo do YouTube';
-    }
-    $('videoThumb').src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
-    $('videoCard').classList.add('active');
+    const title = oembed ? (oembed.title || id) : id;
 
-    const res = await fetch(`${API}?videoId=${id}`, { signal: AbortSignal.timeout(600000) });
-    if (res.status === 429) {
-      showError('Servidor ocupado transcrevendo outro vídeo. Tente novamente em alguns minutos.');
-      showEmpty('Servidor ocupado', 'Apenas uma transcrição por vez.');
+    const res = await fetch(`${API}?videoId=${id}&title=${encodeURIComponent(title)}`, { method: 'POST' });
+    const data = await res.json();
+
+    if (res.status === 413) {
+      showError(data.error || 'Vídeo muito longo.');
+      $('btnFetch').disabled = false;
+      $('btnFetch').textContent = 'Transcrever';
       return;
     }
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showError(err.error || 'Erro na transcrição');
-      showEmpty('Erro', err.error || 'Falha ao transcrever');
+      showError(data.error || 'Erro ao adicionar');
+      $('btnFetch').disabled = false;
+      $('btnFetch').textContent = 'Transcrever';
       return;
     }
 
-    const data = await res.json();
-    if (data.segments && data.segments.length > 0) {
-      state.segments = data.segments;
-      $('resultCard').classList.add('active');
-      renderTranscript();
-    } else {
-      showError('Nenhum texto encontrado no áudio.');
-    }
+    $('urlInput').value = '';
+    toast(`Adicionado à fila! Posição: ${data.position}`, '📋');
+    renderQueue();
+    $('showQueue').style.display = 'block';
+    $('queueSection').style.display = 'block';
   } catch (e) {
-    if (e.name === 'TimeoutError') showError('Tempo limite excedido. O vídeo pode ser muito longo.');
-    else showError('Erro de conexão. ' + (e.message || ''));
+    showError('Erro ao conectar: ' + (e.message || ''));
   }
 
-  btn.disabled = false;
-  btn.textContent = 'Transcrever';
+  $('btnFetch').disabled = false;
+  $('btnFetch').textContent = 'Transcrever';
+}
+
+async function showResult(jobId) {
+  const res = await fetch(`${API}/status?jobId=${jobId}`);
+  const job = await res.json();
+  if (!job || job.status === 'error') {
+    $('tabTranscriptBtn').click();
+    $('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">❌</div><h3>Erro</h3><p>${esc(job?.error || 'Falha desconhecida')}</p></div>`;
+    $('transcriptActions').style.display = 'none';
+    return;
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (job.segments && job.segments.length > 0) {
+    $('videoCard').classList.add('active');
+    $('resultCard').classList.add('active');
+    $('videoTitle').textContent = job.title || job.videoId;
+    $('videoThumb').src = `https://img.youtube.com/vi/${job.videoId}/hqdefault.jpg`;
+    $('videoChannel').textContent = '';
+
+    state = { videoId: job.videoId, title: job.title || '', channel: '', segments: job.segments };
+
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    $('tabTranscriptBtn').classList.add('active');
+    $('tabTranscript').classList.add('active');
+    renderTranscript();
+    toast('Transcrição concluída!', '✅');
+  }
 }
 
 function renderTranscript() {
   const list = $('transcriptList');
   list.innerHTML = state.segments.map(s =>
-    `<div class="line" onclick="jumpTo(${s.start})">
+    `<div class="line" onclick="jumpTo('${state.videoId}',${s.start})">
       <span class="time">${fmtTime(s.start)}</span>
       <span class="text">${esc(s.text)}</span>
     </div>`
   ).join('');
-  $('transcriptActions').style.display = state.segments.length ? 'flex' : 'none';
+  $('transcriptActions').style.display = 'flex';
 }
 
-function jumpTo(sec) {
-  window.open(`https://www.youtube.com/watch?v=${state.videoId}&t=${Math.floor(sec)}`, '_blank');
-}
+function jumpTo(vid, sec) { window.open(`https://www.youtube.com/watch?v=${vid}&t=${Math.floor(sec)}`, '_blank'); }
 
 function doCopyAll() {
   const text = state.segments.map(s => `[${fmtTime(s.start)}] ${s.text}`).join('\n');
-  navigator.clipboard.writeText(text).then(() => toast('Transcrição copiada!', '📋')).catch(() => toast('Erro ao copiar', '✗'));
+  navigator.clipboard.writeText(text).then(() => toast('Copiado!', '📋')).catch(() => toast('Erro', '✗'));
 }
 
 function doDownloadTxt() {
@@ -648,39 +764,29 @@ function doDownloadTxt() {
   a.download = `transcript-${state.videoId}.txt`;
   a.click();
   URL.revokeObjectURL(a.href);
-  toast('Download iniciado!', '⬇');
+  toast('Download!', '⬇');
 }
 
 function doSearch() {
   const q = $('searchInput').value.trim().toLowerCase();
   const list = $('searchResults');
   const count = $('searchCount');
-
-  if (!q || !state.segments.length) {
-    list.innerHTML = '';
-    count.textContent = '';
-    return;
-  }
-
+  if (!q || !state.segments.length) { list.innerHTML = ''; count.textContent = ''; return; }
   const matches = state.segments.filter(s => s.text.toLowerCase().includes(q));
   count.textContent = `${matches.length} resultado${matches.length !== 1 ? 's' : ''}`;
-
   list.innerHTML = matches.length === 0
     ? '<div class="empty-state"><div class="icon">🔍</div><p>Nenhum resultado</p></div>'
     : matches.map(s => {
         const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-        const display = esc(s.text).replace(re, '<mark>$1</mark>');
-        return `<div class="line" onclick="jumpTo(${s.start})">
+        return `<div class="line" onclick="jumpTo('${state.videoId}',${s.start})">
           <span class="time">${fmtTime(s.start)}</span>
-          <span class="text">${display}</span>
+          <span class="text">${esc(s.text).replace(re, '<mark>\$1</mark>')}</span>
         </div>`;
       }).join('');
 }
 
 function showError(msg) { const e = $('errorBox'); e.textContent = msg; e.classList.add('active'); }
 function hideError() { $('errorBox').classList.remove('active'); }
-function showEmpty(title, msg) { $('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>${esc(title)}</h3><p>${esc(msg)}</p></div>`; }
-function showLoading(msg) { $('transcriptList').innerHTML = `<div class="loading-state"><div class="spinner"></div><p>${esc(msg || 'Carregando...')}</p></div>`; }
 
 // Tabs
 document.querySelectorAll('.tab').forEach(tab => {
@@ -688,24 +794,22 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
-    const tname = tab.dataset.tab;
-    const id = 'tab' + tname.charAt(0).toUpperCase() + tname.slice(1);
+    const tn = tab.dataset.tab;
+    const id = 'tab' + tn.charAt(0).toUpperCase() + tn.slice(1);
     $(id).classList.add('active');
-    if (tname === 'info') buildInfo();
-    if (tname === 'search') $('searchInput').focus();
+    if (tn === 'info' && state.segments) buildInfo();
+    if (tn === 'search') $('searchInput').focus();
   });
 });
 
 function buildInfo() {
-  const dur = state.segments.length > 0 ? fmtTime(state.segments[state.segments.length-1].end || 0) : '—';
+  const d = state.segments?.length > 0 ? fmtTime(state.segments[state.segments.length-1].end || 0) : '—';
   $('infoGrid').innerHTML = [
-    { label: 'ID do Vídeo', value: state.videoId },
-    { label: 'Título', value: state.title || '—' },
-    { label: 'Canal', value: state.channel || '—' },
-    { label: 'Duração transcrita', value: dur },
-    { label: 'Segmentos', value: String(state.segments.length) },
-    { label: 'URL', value: `<a href="https://www.youtube.com/watch?v=${state.videoId}" target="_blank">Abrir video</a>` }
-  ].map(i => `<div class="info-item"><span class="label">${i.label}</span><span class="value">${i.value}</span></div>`).join('');
+    {l:'Título', v:state.title || '—'},
+    {l:'Segmentos', v:String(state.segments?.length || 0)},
+    {l:'Duração', v:d},
+    {l:'Buscar no YouTube', v:`<a href="https://www.youtube.com/watch?v=${state.videoId}" target="_blank">Abrir vídeo</a>`}
+  ].map(i => `<div class="info-item"><span class="label">${i.l}</span><span class="value">${i.v}</span></div>`).join('');
 }
 
 // Theme
@@ -718,13 +822,15 @@ const saved = localStorage.getItem('yt-transcriber-theme');
 if (saved) setTheme(saved);
 $('themeToggle').addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
 
-$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleFetch(); });
+$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') addToQueue(); });
 
-// Search debounce
 let searchTimer;
 $('searchInput').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 300); });
 
-$('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>YouTube Transcriber</h3><p>Cole uma URL do YouTube e clique em <strong>Transcrever</strong>.</p></div>`;
+// Init
+$('tabTranscriptBtn').addEventListener('click', () => {});
+$('transcriptList').innerHTML = '<div class="empty-state"><div class="icon">🎬</div><h3>YouTube Transcriber</h3><p>Cole uma URL e clique em <strong>Transcrever</strong>.</p></div>';
+renderQueue();
 </script>
 </body>
 </html>
