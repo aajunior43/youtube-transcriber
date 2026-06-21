@@ -503,13 +503,9 @@ body {
     </div>
 
     <div class="tab-content active" id="tabTranscript">
-      <div class="lang-bar" id="langBar">
-        <label>Idioma:</label>
-        <select id="langSelect"></select>
-      </div>
-      <div class="action-bar">
-        <button class="btn btn-secondary btn-sm" onclick="doCopyAll()">Copiar</button>
-        <button class="btn btn-secondary btn-sm" onclick="doDownloadTxt()">Download TXT</button>
+      <div class="action-bar" style="justify-content:center;padding:12px 0">
+        <button class="btn btn-primary" id="btnOpenTranscript" onclick="window.open('https://youtubetranscript.com/?v='+state.videoId,'_blank')">📄 Abrir Transcrição</button>
+        <button class="btn btn-secondary btn-sm" id="btnCopyUrl" style="padding:14px 18px">📋 Copiar Link</button>
       </div>
       <div class="transcript-list" id="transcriptList"></div>
     </div>
@@ -536,60 +532,22 @@ body {
 </div>
 
 <script>
-const API_BASE = 'https://youtubetranscript.com/api_v2';
-let state = {
-  videoId: '',
-  segments: [],
-  lang: 'en',
-  availableLangs: []
-};
-
+let state = { videoId: '', title: '', channel: '' };
 const $ = id => document.getElementById(id);
 
 function toast(msg, icon = '') {
   const el = document.createElement('div');
   el.className = 'toast';
-  el.innerHTML = icon ? `<span>${icon}</span> ${escapeHtml(msg)}` : escapeHtml(msg);
+  el.innerHTML = icon ? `<span>${icon}</span> ${esc(msg)}` : esc(msg);
   $('toastContainer').appendChild(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 260); }, 2200);
 }
-
-function escapeHtml(t) {
-  const d = document.createElement('div');
-  d.textContent = t;
-  return d.innerHTML;
-}
+function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
 
 function extractVideoId(url) {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=)([\w-]{11})/,
-    /(?:youtu\.be\/)([\w-]{11})/,
-    /(?:youtube\.com\/embed\/)([\w-]{11})/,
-    /(?:youtube\.com\/v\/)([\w-]{11})/,
-    /(?:youtube\.com\/shorts\/)([\w-]{11})/
-  ];
-  for (const p of patterns) {
-    const m = url.match(p);
-    if (m) return m[1];
-  }
+  const p = [/youtube\.com\/watch\?v=([\w-]{11})/, /youtu\.be\/([\w-]{11})/, /youtube\.com\/embed\/([\w-]{11})/, /youtube\.com\/shorts\/([\w-]{11})/];
+  for (const r of p) { const m = url.match(r); if (m) return m[1]; }
   return null;
-}
-
-function fmtTime(sec) {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
-}
-
-function showError(msg) {
-  const e = $('errorBox');
-  e.textContent = msg;
-  e.classList.add('active');
-}
-
-function hideError() {
-  $('errorBox').classList.remove('active');
 }
 
 async function handleFetch() {
@@ -597,242 +555,45 @@ async function handleFetch() {
   const url = $('urlInput').value.trim();
   if (!url) { showError('Insira uma URL do YouTube.'); return; }
   const id = extractVideoId(url);
-  if (!id) { showError('URL inválida. Use youtube.com/watch?v=…, youtu.be/… ou youtube.com/embed/…'); return; }
+  if (!id) { showError('URL inválida.'); return; }
 
   state.videoId = id;
-  state.segments = [];
-  state.availableLangs = [];
-
   const btn = $('btnFetch');
   btn.disabled = true;
   btn.textContent = 'Buscando…';
-
-  showLoading();
   hideError();
 
   $('videoCard').classList.remove('active');
   $('resultCard').classList.remove('active');
+  $('btnOpenTranscript').onclick = () => window.open(`https://youtubetranscript.com/?v=${id}`, '_blank');
+  $('btnCopyUrl').onclick = () => { navigator.clipboard.writeText(`https://youtubetranscript.com/?v=${id}`).then(() => toast('Link copiado!', '📋')); };
 
   try {
-    const [oembedRes, transcriptRes] = await Promise.all([
-      fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`),
-      fetch(`${API_BASE}?video_id=${id}`)
-    ]);
-
-    if (oembedRes.ok) {
-      const info = await oembedRes.json();
-      $('videoTitle').textContent = info.title || 'Sem título';
-      $('videoChannel').textContent = info.author_name || '';
-      $('videoThumb').src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
-      $('videoThumb').alt = info.title || '';
-      $('videoCard').classList.add('active');
+    const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`).then(r => r.ok ? r.json() : null);
+    if (oembed) {
+      state.title = oembed.title || '';
+      state.channel = oembed.author_name || '';
+      $('videoTitle').textContent = state.title;
+      $('videoChannel').textContent = state.channel;
     } else {
-      $('videoThumb').src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
-      $('videoCard').classList.add('active');
       $('videoTitle').textContent = 'Vídeo do YouTube';
     }
-
-    if (transcriptRes.ok) {
-      const data = await transcriptRes.json();
-      if (data && Array.isArray(data) && data.length > 0) {
-        state.segments = data;
-        state.availableLangs = [];
-        $('resultCard').classList.add('active');
-        populateLangSelect();
-        renderTranscript();
-      } else if (data && data.captions && Array.isArray(data.captions)) {
-        state.segments = data.captions;
-        state.availableLangs = data.translationLanguages || [];
-        $('resultCard').classList.add('active');
-        populateLangSelect();
-        renderTranscript();
-      } else {
-        showError('Nenhuma transcrição disponível para este vídeo.');
-        showEmpty('Transcrição não encontrada', 'Este vídeo pode não ter legendas/CC disponíveis.');
-      }
-    } else {
-      showError('Erro ao buscar transcrição. Verifique se o vídeo existe e possui legendas.');
-      showEmpty('Transcrição não encontrada', 'Tente outro vídeo com legendas ativadas.');
-    }
+    $('videoThumb').src = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+    $('videoCard').classList.add('active');
+    $('resultCard').classList.add('active');
+    showEmpty('Transcrição via YouTubeTranscript.com', 'Clique no botão abaixo para abrir a transcrição em nosso parceiro.');
   } catch (e) {
-    showError('Erro de conexão. Verifique sua internet e tente novamente.');
-    showEmpty('Erro de conexão', 'Não foi possível contactar o servidor.');
+    showError('Erro ao carregar informações do vídeo.');
   }
 
   btn.disabled = false;
   btn.textContent = 'Transcrever';
 }
 
-function populateLangSelect() {
-  const sel = $('langSelect');
-  sel.innerHTML = '';
-  if (state.availableLangs.length > 0) {
-    state.availableLangs.forEach(l => {
-      const o = document.createElement('option');
-      o.value = l.languageCode || l;
-      o.textContent = l.language || l.languageCode || l;
-      if (o.value === state.lang) o.selected = true;
-      sel.appendChild(o);
-    });
-  } else {
-    const o = document.createElement('option');
-    o.value = 'en';
-    o.textContent = 'Inglês (padrão)';
-    sel.appendChild(o);
-  }
-}
-
-async function changeLang() {
-  const lang = $('langSelect').value;
-  state.lang = lang;
-
-  if (state.availableLangs.length > 0) {
-    try {
-      const res = await fetch(`${API_BASE}?video_id=${state.videoId}&lang=${lang}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          state.segments = data;
-        } else if (data.captions) {
-          state.segments = data.captions;
-        }
-        renderTranscript();
-        return;
-      }
-    } catch (e) {}
-  }
-
-  toast('Transcrição carregada', '✓');
-}
-
-function renderTranscript(filterText) {
-  const list = $('transcriptList');
-  const segs = state.segments;
-
-  if (!segs || segs.length === 0) {
-    $('resultCard').classList.remove('active');
-    return;
-  }
-
-  let html = '';
-  const q = filterText ? filterText.trim().toLowerCase() : '';
-
-  segs.forEach((s, i) => {
-    const text = s.text || '';
-    const start = s.start || 0;
-    const time = fmtTime(start);
-    let displayText = escapeHtml(text);
-
-    if (q && text.toLowerCase().includes(q)) {
-      const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-      displayText = escapeHtml(text).replace(re, '<mark>$1</mark>');
-    }
-
-    html += `<div class="line" onclick="jumpTo(${start})">
-      <span class="time">${time}</span>
-      <span class="text">${displayText}</span>
-    </div>`;
-  });
-
-  list.innerHTML = html;
-}
-
-function jumpTo(sec) {
-  const url = `https://www.youtube.com/watch?v=${state.videoId}&t=${Math.floor(sec)}`;
-  window.open(url, '_blank');
-}
-
-function doCopyAll() {
-  if (!state.segments.length) return;
-  const text = state.segments.map(s => `[${fmtTime(s.start || 0)}] ${s.text}`).join('\n');
-  navigator.clipboard.writeText(text).then(() => toast('Transcrição copiada!', '📋')).catch(() => toast('Erro ao copiar', '✗'));
-}
-
-function doDownloadTxt() {
-  if (!state.segments.length) return;
-  const text = state.segments.map(s => `[${fmtTime(s.start || 0)}] ${s.text}`).join('\n');
-  download(`transcript-${state.videoId}.txt`, text, 'text/plain');
-  toast('Download iniciado!', '⬇');
-}
-
-function download(name, content, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function doSearch() {
-  const q = $('searchInput').value;
-  const list = $('searchResults');
-  const count = $('searchCount');
-
-  if (!q.trim() || !state.segments.length) {
-    list.innerHTML = '';
-    count.textContent = '';
-    renderTranscript();
-    return;
-  }
-
-  const lower = q.trim().toLowerCase();
-  const matches = state.segments.filter(s => (s.text || '').toLowerCase().includes(lower));
-
-  count.textContent = `${matches.length} resultado${matches.length !== 1 ? 's' : ''}`;
-
-  let html = '';
-  matches.forEach(s => {
-    const text = s.text || '';
-    const re = new RegExp(`(${lower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    const display = escapeHtml(text).replace(re, '<mark>$1</mark>');
-    html += `<div class="line" onclick="jumpTo(${s.start || 0})">
-      <span class="time">${fmtTime(s.start || 0)}</span>
-      <span class="text">${display}</span>
-    </div>`;
-  });
-
-  if (!html) {
-    html = '<div class="empty-state"><div class="icon">🔍</div><p>Nenhum resultado encontrado</p></div>';
-  }
-
-  list.innerHTML = html;
-}
-
-function buildInfo() {
-  const el = $('infoGrid');
-  const items = [
-    { label: 'ID do Vídeo', value: state.videoId },
-    { label: 'Total de linhas', value: String(state.segments.length) },
-    { label: 'Idioma', value: state.lang || '—' },
-    { label: 'URL do Vídeo', value: `<a href="https://www.youtube.com/watch?v=${state.videoId}" target="_blank">youtube.com/watch?v=${state.videoId}</a>` }
-  ];
-
-  if (state.availableLangs.length > 0) {
-    items.splice(3, 0, { label: 'Idiomas disponíveis', value: state.availableLangs.map(l => l.language || l.languageCode).join(', ') || String(state.availableLangs.length) });
-  }
-
-  el.innerHTML = items.map(i => `
-    <div class="info-item">
-      <span class="label">${i.label}</span>
-      <span class="value">${i.value}</span>
-    </div>
-  `).join('');
-}
-
-function showLoading() {
-  const list = $('transcriptList');
-  list.innerHTML = `<div class="loading-state"><div class="spinner"></div><p>Buscando transcrição…</p></div>`;
-  $('searchResults').innerHTML = '';
-  $('searchCount').textContent = '';
-  $('langBar').style.display = 'none';
-}
-
-function showEmpty(title, msg) {
-  const list = $('transcriptList');
-  list.innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(msg)}</p></div>`;
-}
+function showError(msg) { const e = $('errorBox'); e.textContent = msg; e.classList.add('active'); }
+function hideError() { $('errorBox').classList.remove('active'); }
+function showEmpty(title, msg) { $('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>${esc(title)}</h3><p>${esc(msg)}</p></div>`; }
+function showLoading() { $('transcriptList').innerHTML = `<div class="empty-state"><div class="spinner"></div><p>Carregando…</p></div>`; }
 
 // Tabs
 document.querySelectorAll('.tab').forEach(tab => {
@@ -840,11 +601,20 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
-    $(`tab${tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1)}`).classList.add('active');
+    const id = 'tab' + tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1);
+    $(id).classList.add('active');
     if (tab.dataset.tab === 'info') buildInfo();
-    if (tab.dataset.tab === 'search') $('searchInput').focus();
   });
 });
+
+function buildInfo() {
+  $('infoGrid').innerHTML = [
+    { label: 'ID do Vídeo', value: state.videoId },
+    { label: 'Título', value: state.title || '—' },
+    { label: 'Canal', value: state.channel || '—' },
+    { label: 'URL', value: `<a href="https://youtubetranscript.com/?v=${state.videoId}" target="_blank">youtubetranscript.com</a>` }
+  ].map(i => `<div class="info-item"><span class="label">${i.label}</span><span class="value">${i.value}</span></div>`).join('');
+}
 
 // Theme
 function setTheme(t) {
@@ -852,33 +622,13 @@ function setTheme(t) {
   localStorage.setItem('yt-transcriber-theme', t);
   $('themeToggle').textContent = t === 'dark' ? '🌙' : '☀️';
 }
-
 const saved = localStorage.getItem('yt-transcriber-theme');
 if (saved) setTheme(saved);
+$('themeToggle').addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
 
-$('themeToggle').addEventListener('click', () => {
-  const cur = document.documentElement.getAttribute('data-theme');
-  setTheme(cur === 'dark' ? 'light' : 'dark');
-});
+$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleFetch(); });
 
-// Enter key
-$('urlInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') handleFetch();
-});
-
-// Lang change
-$('langSelect').addEventListener('change', changeLang);
-
-// Search on input
-let searchTimer;
-$('searchInput').addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(doSearch, 300);
-});
-
-// Init
-$('langBar').style.display = 'none';
-$('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>YouTube Transcriber</h3><p>Cole uma URL do YouTube e clique em <strong>Transcrever</strong> para começar.</p></div>`;
+$('transcriptList').innerHTML = `<div class="empty-state"><div class="icon">🎬</div><h3>YouTube Transcriber</h3><p>Cole uma URL do YouTube e clique em <strong>Transcrever</strong>.</p></div>`;
 </script>
 </body>
 </html>
