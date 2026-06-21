@@ -120,6 +120,19 @@ def media_duration(path):
         raise ValueError("Arquivo de áudio ou vídeo inválido.")
     return float(result.stdout.strip())
 
+def normalize_media(path):
+    fd, wav_path = tempfile.mkstemp(prefix="transcript-audio-", suffix=".wav")
+    os.close(fd)
+    result = subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", path,
+        "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav_path
+    ], capture_output=True, text=True, timeout=300)
+    if result.returncode != 0 or os.path.getsize(wav_path) < 1000:
+        cleanup([wav_path])
+        detail = (result.stderr or "").strip().splitlines()
+        raise ValueError(detail[-1][:180] if detail else "Não foi possível converter a mídia.")
+    return wav_path
+
 def worker():
     global worker_active
     while True:
@@ -130,11 +143,15 @@ def worker():
                 worker_active = False
                 return
         source_path = job["sourcePath"]
+        normalized_path = None
         try:
+            job["status"] = "preparing"
+            job["progress"] = 10
+            normalized_path = normalize_media(source_path)
             job["status"] = "transcribing"
             job["progress"] = 15
             wh_model = get_model()
-            segments_gen, info = wh_model.transcribe(source_path, beam_size=5)
+            segments_gen, info = wh_model.transcribe(normalized_path, beam_size=1)
 
             segments = []
             total = 0
@@ -162,7 +179,7 @@ def worker():
             job["status"] = "error"
             job["error"] = str(e)[:200]
         finally:
-            cleanup([source_path])
+            cleanup([source_path, normalized_path])
             job["completedAt"] = time.time()
             with queue_lock:
                 if queue:
@@ -262,7 +279,7 @@ def get_status():
     memory_jobs = current_queue + [job for job in current_completed if job["id"] not in stored_ids]
     jobs = memory_jobs + stored_jobs
     return jsonify({
-        "running": any(j["status"] in ("transcribing", "saving") for j in current_queue),
+        "running": any(j["status"] in ("preparing", "transcribing", "saving") for j in current_queue),
         "queueSize": len(current_queue),
         "completedSize": len(stored_jobs),
         "jobs": [{
@@ -289,7 +306,7 @@ def get_queue():
 @app.route("/health")
 def health():
     with queue_lock:
-        busy = any(j["status"] in ("transcribing", "saving") for j in queue)
+        busy = any(j["status"] in ("preparing", "transcribing", "saving") for j in queue)
     return jsonify({
         "status": "ok", "queueSize": len(queue), "busy": busy,
         "model": MODEL_SIZE, "maxUploadMb": MAX_UPLOAD_MB

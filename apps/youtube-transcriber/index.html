@@ -647,22 +647,22 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2,'0')}`;
 }
 
-const STATUS_ICON = { queued:'⏳', transcribing:'🎤', saving:'💾', done:'✅', error:'❌' };
+const STATUS_ICON = { queued:'⏳', preparing:'⚙', transcribing:'🎤', saving:'💾', done:'✅', error:'❌' };
 
 /* Queue system */
 function renderQueue() {
   fetch(`${API}/status`).then(r => r.json()).then(data => {
     const el = $('queueList');
     const jobs = data.jobs || [];
-    const running = jobs.find(j => ['queued','transcribing','saving'].includes(j.status));
+    const running = jobs.find(j => ['queued','preparing','transcribing','saving'].includes(j.status));
 
     // Update queue status bar
     if (jobs.length > 0) {
       $('queueSection').style.display = 'block';
-      const active = jobs.find(j => ['queued','transcribing','saving'].includes(j.status));
+      const active = jobs.find(j => ['queued','preparing','transcribing','saving'].includes(j.status));
       if (active) {
-        $('queueStatusIcon').textContent = active.status === 'saving' ? '💾' : active.status === 'transcribing' ? '🎤' : '⏳';
-        $('queueStatusText').textContent = active.status === 'saving' ? 'Salvando no banco…' : active.status === 'transcribing' ? 'Transcrevendo…' : 'Na fila…';
+        $('queueStatusIcon').textContent = active.status === 'saving' ? '💾' : active.status === 'transcribing' ? '🎤' : active.status === 'preparing' ? '⚙' : '⏳';
+        $('queueStatusText').textContent = active.status === 'saving' ? 'Salvando no banco…' : active.status === 'transcribing' ? 'Transcrevendo…' : active.status === 'preparing' ? 'Preparando mídia…' : 'Na fila…';
       } else {
         $('queueStatusIcon').textContent = '✅';
         $('queueStatusText').textContent = 'Todos concluídos';
@@ -680,6 +680,7 @@ function renderQueue() {
     el.innerHTML = jobs.map((j, i) => {
       const statusIcon = STATUS_ICON[j.status] || '⏳';
       let statusText = j.status === 'queued' ? `Na fila (#${i+1})` :
+                       j.status === 'preparing' ? 'Preparando mídia…' :
                        j.status === 'transcribing' ? 'Transcrevendo…' :
                        j.status === 'saving' ? 'Salvando no banco…' :
                        j.status === 'done' ? '✅ Concluído' : '❌ Erro';
@@ -690,7 +691,7 @@ function renderQueue() {
         </div>
         ${j.status === 'done' ? `<button class="qi-btn done-btn" onclick="showResult('${j.id}')">Ver</button>` : ''}
         ${j.status === 'error' ? `<button class="qi-btn err" onclick="showResult('${j.id}')">${esc(j.error?.substring(0,30) || 'Erro')}</button>` : ''}
-        ${['queued','transcribing','saving'].includes(j.status) ?
+        ${['queued','preparing','transcribing','saving'].includes(j.status) ?
           `<div class="qi-progress"><div class="qi-bar" style="width:${j.progress}%"></div></div>` : ''}
       </div>`;
     }).join('');
