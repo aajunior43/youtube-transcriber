@@ -83,6 +83,8 @@ services:
       dockerfile: services/transcript-api/Dockerfile
     container_name: transcript-api
     restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 768m
     expose:
       - "8771"
     networks:

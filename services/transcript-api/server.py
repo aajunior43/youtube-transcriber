@@ -6,7 +6,8 @@ from faster_whisper import WhisperModel
 app = Flask(__name__)
 CORS(app)
 
-MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "tiny")
+MAX_DURATION = int(os.environ.get("MAX_DURATION_MINUTES", "20")) * 60
 model = None
 transcribing = False
 model_lock = threading.Lock()
@@ -30,6 +31,21 @@ def transcribe():
     video_id = request.args.get("videoId") or (request.json or {}).get("videoId")
     if not video_id or len(video_id) != 11:
         return jsonify({"error": "Invalid video ID"}), 400
+
+    # Check video duration first (lightweight)
+    import subprocess as sp
+    info = sp.run([
+        "yt-dlp", "--print", "duration", "--no-playlist",
+        "--quiet",
+        f"https://www.youtube.com/watch?v={video_id}"
+    ], capture_output=True, text=True, timeout=30)
+    if info.returncode == 0 and info.stdout.strip():
+        try:
+            dur = int(info.stdout.strip())
+            if dur > MAX_DURATION:
+                return jsonify({"error": f"Video too long ({dur//60}min). Max: {MAX_DURATION//60}min."}), 413
+        except ValueError:
+            pass
 
     if not transcribe_lock.acquire(blocking=False):
         return jsonify({"error": "Server busy transcribing another video. Try again in a few minutes."}), 429

@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir yt-dlp flask flask-cors faster-whisper
 
 COPY services/transcript-api/server.py .
 
-ENV WHISPER_MODEL=base
+ENV WHISPER_MODEL=tiny
+ENV MAX_DURATION_MINUTES=20
 
 EXPOSE 8771
 
