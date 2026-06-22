@@ -12,3 +12,6 @@ CREATE TABLE IF NOT EXISTS transcripts (
 
 CREATE INDEX IF NOT EXISTS idx_transcripts_completed_at
     ON transcripts(completed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_transcripts_created_at
+    ON transcripts(created_at DESC);

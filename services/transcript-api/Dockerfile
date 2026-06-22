@@ -3,7 +3,7 @@ WORKDIR /app
 
 RUN apt-get update -qq && apt-get install -y -qq ffmpeg && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir flask flask-cors faster-whisper gunicorn psycopg2-binary
+RUN pip install --no-cache-dir flask flask-cors faster-whisper gunicorn psycopg2-binary reportlab
 
 COPY services/transcript-api/server.py .
 

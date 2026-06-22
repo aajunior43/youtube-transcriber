@@ -442,6 +442,9 @@ body {
 }
 .qi-btn:hover { border-color:var(--primary);color:var(--primary); }
 .qi-btn.err { border-color:var(--primary);color:var(--primary); }
+.qi-actions { display:flex;gap:6px;flex-shrink:0; }
+.qi-btn.delete-btn { border-color:rgba(225,29,72,.4);color:var(--primary); }
+.qi-btn.delete-btn:hover { background:rgba(225,29,72,.1); }
 .qi-progress {
   position:absolute;bottom:0;left:0;right:0;height:3px;
   background:var(--border);border-radius:0 0 14px 14px;overflow:hidden;
@@ -561,7 +564,7 @@ body {
       </span>
       <span style="font-size:0.7rem;color:var(--text-muted);font-family:var(--mono)" id="queueCount">0 arquivos</span>
     </div>
-    <div id="queueList">
+    <div id="queueListMain">
       <div class="empty-queue">Nenhum arquivo na fila</div>
     </div>
   </div>
@@ -588,7 +591,9 @@ body {
     <div class="tab-content active" id="tabTranscript">
       <div id="transcriptActions" style="display:none" class="action-bar">
         <button class="btn btn-secondary btn-sm" onclick="doCopyAll()">📋 Copiar</button>
-        <button class="btn btn-secondary btn-sm" onclick="doDownloadTxt()">⬇ Download TXT</button>
+        <button class="btn btn-secondary btn-sm" onclick="doDownloadTxt()">⬇ TXT</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadStored('md')">⬇ MD</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadStored('pdf')">⬇ PDF</button>
       </div>
       <div class="transcript-list" id="transcriptList"></div>
     </div>
@@ -597,7 +602,7 @@ body {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <div style="font-size:0.85rem;color:var(--text-secondary)" id="queueInfo"></div>
       </div>
-      <div id="queueList"></div>
+      <div id="queueListTab"></div>
     </div>
 
     <div class="tab-content" id="tabSearch">
@@ -625,7 +630,7 @@ body {
 const $ = id => document.getElementById(id);
 const API = '/api/transcript';
 let pollTimer = null;
-let state = { videoId:'', title:'', source:'upload', segments:[] };
+let state = { id:'', videoId:'', title:'', source:'upload', segments:[] };
 let selectedUpload = null;
 
 function toast(msg, icon = '') {
@@ -652,8 +657,8 @@ const STATUS_ICON = { queued:'⏳', preparing:'⚙', transcribing:'🎤', saving
 /* Queue system */
 function renderQueue() {
   fetch(`${API}/status`).then(r => r.json()).then(data => {
-    const el = $('queueList');
-    const jobs = data.jobs || [];
+    const lists = [$('queueListMain'), $('queueListTab')];
+    const jobs = (data.jobs || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const running = jobs.find(j => ['queued','preparing','transcribing','saving'].includes(j.status));
 
     // Update queue status bar
@@ -673,13 +678,14 @@ function renderQueue() {
     }
 
     if (jobs.length === 0) {
-      el.innerHTML = '<div class="empty-queue">Nenhum arquivo na fila</div>';
+      lists.forEach(el => el.innerHTML = '<div class="empty-queue">Nenhuma transcrição salva</div>');
       return;
     }
 
-    el.innerHTML = jobs.map((j, i) => {
+    const queueHtml = jobs.map(j => {
       const statusIcon = STATUS_ICON[j.status] || '⏳';
-      let statusText = j.status === 'queued' ? `Na fila (#${i+1})` :
+      const created = j.createdAt ? new Date(j.createdAt * 1000).toLocaleString('pt-BR') : '';
+      let statusText = j.status === 'queued' ? 'Na fila' :
                        j.status === 'preparing' ? 'Preparando mídia…' :
                        j.status === 'transcribing' ? 'Transcrevendo…' :
                        j.status === 'saving' ? 'Salvando no banco…' :
@@ -687,14 +693,18 @@ function renderQueue() {
       return `<div class="queue-item ${j.status}">
         <div class="qi-info">
           <div class="qi-title">${esc(j.title || j.videoId)}</div>
-          <div class="qi-status">${statusIcon} ${statusText}</div>
+          <div class="qi-status">${statusIcon} ${statusText}${created ? ` · ${created}` : ''}</div>
         </div>
-        ${j.status === 'done' ? `<button class="qi-btn done-btn" onclick="showResult('${j.id}')">Ver</button>` : ''}
-        ${j.status === 'error' ? `<button class="qi-btn err" onclick="showResult('${j.id}')">${esc(j.error?.substring(0,30) || 'Erro')}</button>` : ''}
+        <div class="qi-actions">
+          ${j.status === 'done' ? `<button class="qi-btn done-btn" onclick="showResult('${j.id}')">Ver</button>` : ''}
+          ${j.status === 'error' ? `<button class="qi-btn err" onclick="showResult('${j.id}')">Erro</button>` : ''}
+          ${['done','error'].includes(j.status) ? `<button class="qi-btn delete-btn" onclick="deleteTranscript('${j.id}')">Excluir</button>` : ''}
+        </div>
         ${['queued','preparing','transcribing','saving'].includes(j.status) ?
           `<div class="qi-progress"><div class="qi-bar" style="width:${j.progress}%"></div></div>` : ''}
       </div>`;
     }).join('');
+    lists.forEach(el => el.innerHTML = queueHtml);
     if (running) startPolling();
   }).catch(() => {});
 }
@@ -771,7 +781,7 @@ async function showResult(jobId) {
     $('mediaIcon').textContent = /\.(mp4|mov|mkv|avi|webm|mpeg|mpg)$/i.test(job.filename || '') ? '🎬' : '🎧';
     $('videoChannel').textContent = '';
 
-    state = { videoId: job.videoId, title: job.title || '', source:job.source || 'upload', channel: '', segments: job.segments };
+    state = { id:job.id, videoId:job.videoId, title:job.title || '', source:job.source || 'upload', channel:'', segments:job.segments };
 
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -810,6 +820,29 @@ function doDownloadTxt() {
   a.click();
   URL.revokeObjectURL(a.href);
   toast('Download!', '⬇');
+}
+
+function downloadStored(format) {
+  if (!state.id) { showError('Abra uma transcrição salva antes de baixar.'); return; }
+  const a = document.createElement('a');
+  a.href = `${API}/${encodeURIComponent(state.id)}/download?format=${format}`;
+  a.click();
+  toast(`Download ${format.toUpperCase()} iniciado!`, '⬇');
+}
+
+async function deleteTranscript(jobId) {
+  if (!confirm('Excluir esta transcrição permanentemente?')) return;
+  const response = await fetch(`${API}/${encodeURIComponent(jobId)}`, { method:'DELETE' });
+  const data = await response.json();
+  if (!response.ok) { showError(data.error || 'Não foi possível excluir.'); return; }
+  if (state.id === jobId) {
+    state = { id:'', videoId:'', title:'', source:'upload', segments:[] };
+    $('videoCard').classList.remove('active');
+    $('resultCard').classList.remove('active');
+    $('transcriptActions').style.display = 'none';
+  }
+  toast('Transcrição excluída.', '✓');
+  renderQueue();
 }
 
 function doSearch() {

@@ -1,9 +1,16 @@
 import os, tempfile, time, threading, uuid, subprocess
+from io import BytesIO
+from xml.sax.saxutils import escape
 import psycopg2
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from faster_whisper import WhisperModel
 from psycopg2.extras import Json, RealDictCursor
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -55,6 +62,7 @@ def init_db():
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_transcripts_completed_at ON transcripts(completed_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_transcripts_created_at ON transcripts(created_at DESC)")
 
 def save_transcript(job):
     full_text = " ".join(segment["text"] for segment in job["segments"]).strip()
@@ -94,9 +102,63 @@ def load_transcript(job_id):
 
 def list_transcripts(limit=50):
     with get_db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cursor:
-        cursor.execute("SELECT * FROM transcripts ORDER BY completed_at DESC LIMIT %s", (limit,))
+        cursor.execute("SELECT * FROM transcripts ORDER BY created_at DESC LIMIT %s", (limit,))
         rows = cursor.fetchall()
     return [db_row_to_job(row) for row in rows]
+
+def timestamp_label(seconds):
+    total = int(seconds or 0)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+def markdown_document(job):
+    lines = [
+        f"# {job['title']}", "",
+        f"- Idioma: {job['language']}",
+        f"- Duração: {timestamp_label(job['duration'])}", "",
+        "## Transcrição", ""
+    ]
+    lines.extend(
+        f"**[{timestamp_label(segment['start'])}]** {segment['text']}"
+        for segment in job["segments"]
+    )
+    return "\n\n".join(lines) + "\n"
+
+def pdf_document(job):
+    output = BytesIO()
+    document = SimpleDocTemplate(
+        output, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=job["title"], author="Hub Master"
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TranscriptTitle", parent=styles["Title"], alignment=TA_CENTER,
+        fontName="Helvetica-Bold", fontSize=16, leading=20, spaceAfter=12
+    )
+    meta_style = ParagraphStyle(
+        "TranscriptMeta", parent=styles["Normal"], fontSize=9,
+        leading=12, textColor="#555555", spaceAfter=12
+    )
+    line_style = ParagraphStyle(
+        "TranscriptLine", parent=styles["BodyText"], fontSize=10,
+        leading=14, spaceAfter=7
+    )
+    story = [
+        Paragraph(escape(job["title"]), title_style),
+        Paragraph(
+            f"Idioma: {escape(job['language'])} &nbsp;&nbsp; "
+            f"Duração: {timestamp_label(job['duration'])}", meta_style
+        ),
+        Spacer(1, 3 * mm)
+    ]
+    for segment in job["segments"]:
+        story.append(Paragraph(
+            f"<b>[{timestamp_label(segment['start'])}]</b> {escape(segment['text'])}",
+            line_style
+        ))
+    document.build(story)
+    output.seek(0)
+    return output
 
 init_db()
 
@@ -287,6 +349,7 @@ def get_status():
     stored_ids = {job["id"] for job in stored_jobs}
     memory_jobs = current_queue + [job for job in current_completed if job["id"] not in stored_ids]
     jobs = memory_jobs + stored_jobs
+    jobs.sort(key=lambda job: job.get("createdAt", 0), reverse=True)
     return jsonify({
         "running": any(j["status"] in ("preparing", "transcribing", "saving") for j in current_queue),
         "queueSize": len(current_queue),
@@ -294,13 +357,53 @@ def get_status():
         "jobs": [{
             "id": j["id"], "videoId": j["videoId"], "title": j["title"],
             "status": j["status"], "progress": j["progress"],
-            "source": j.get("source", "upload"), "error": j.get("error", "")
+            "source": j.get("source", "upload"), "error": j.get("error", ""),
+            "createdAt": j.get("createdAt", 0)
         } for j in jobs]
     })
 
 @app.route("/api/transcript/history")
 def get_history():
     return jsonify({"transcripts": list_transcripts()})
+
+@app.route("/api/transcript/<job_id>", methods=["DELETE"])
+def delete_transcript(job_id):
+    with queue_lock:
+        if any(job["id"] == job_id for job in queue):
+            return jsonify({"error": "Aguarde o processamento terminar antes de excluir."}), 409
+        before = len(completed)
+        completed[:] = [job for job in completed if job["id"] != job_id]
+        deleted_from_memory = len(completed) != before
+
+    with get_db() as conn, conn.cursor() as cursor:
+        cursor.execute("DELETE FROM transcripts WHERE id = %s", (job_id,))
+        deleted_from_db = cursor.rowcount > 0
+
+    if not deleted_from_memory and not deleted_from_db:
+        return jsonify({"error": "Transcrição não encontrada."}), 404
+    return jsonify({"deleted": True, "id": job_id})
+
+@app.route("/api/transcript/<job_id>/download")
+def download_transcript(job_id):
+    file_format = request.args.get("format", "md").lower()
+    if file_format not in ("md", "pdf"):
+        return jsonify({"error": "Formato de download inválido."}), 400
+
+    job = load_transcript(job_id)
+    if not job:
+        return jsonify({"error": "Transcrição não encontrada."}), 404
+
+    base_name = secure_filename(os.path.splitext(job["filename"])[0]) or "transcricao"
+    if file_format == "md":
+        content = BytesIO(markdown_document(job).encode("utf-8"))
+        return send_file(
+            content, mimetype="text/markdown", as_attachment=True,
+            download_name=f"{base_name}.md"
+        )
+    return send_file(
+        pdf_document(job), mimetype="application/pdf", as_attachment=True,
+        download_name=f"{base_name}.pdf"
+    )
 
 @app.route("/api/transcript/queue", methods=["GET"])
 def get_queue():
